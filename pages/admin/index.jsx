@@ -38,7 +38,7 @@ function extractStoragePath(publicUrl) {
   }
 }
 
-/** Jeśli w DB jest stara wartość typu 'gallery1.jpg', zwróć pełny publiczny URL */
+/** Jeśli w DB jest stara wartość (np. nazwa pliku), zwróć pełny publiczny URL */
 function toPublicUrlIfNeeded(pathOrUrl) {
   if (!pathOrUrl) return "";
   if (pathOrUrl.startsWith("http")) return pathOrUrl;
@@ -57,9 +57,10 @@ export default function Admin() {
   const [blocks, setBlocks] = useState([]);
   const [translations, setTranslations] = useState({});
   const [gallery, setGallery] = useState([]);
-  const langs = ["pl", "en", "de", "es"];
+  const langs = ["pl", "en", "de", "es", "uk"]; // + UK
   const [lang, setLang] = useState("pl");
   const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState({ id: null, lang: null }); // do spinnera na auto-translate
 
   // auth
   useEffect(() => {
@@ -96,7 +97,6 @@ export default function Admin() {
         };
       });
 
-      // popraw legacy URL w galerii (jeśli były same nazwy plików)
       const fixedGallery = (g || []).map((item) => ({
         ...item,
         image_url: toPublicUrlIfNeeded(item.image_url),
@@ -215,16 +215,21 @@ export default function Admin() {
         .eq("id", blockId);
       if (upd.error) return alert(upd.error.message);
       setBlocks((prev) =>
-        prev.map((b) => (b.id === blockId ? { ...b, pdf_url: data.publicUrl } : b))
+        prev.map((b) =>
+          b.id === blockId ? { ...b, pdf_url: data.publicUrl } : b
+        )
       );
     };
   };
 
-  /** usuń PDF powiązany z blokiem (DB + Storage) */
+  /** usuń PDF z bloku (DB + Storage) */
   const removePdf = async (block) => {
     if (!block.pdf_url) return;
     if (!confirm("Usunąć podpięty PDF?")) return;
-    const upd = await supabase.from("blocks").update({ pdf_url: null }).eq("id", block.id);
+    const upd = await supabase
+      .from("blocks")
+      .update({ pdf_url: null })
+      .eq("id", block.id);
     if (upd.error) return alert(upd.error.message);
     try {
       const storagePath = extractStoragePath(block.pdf_url);
@@ -232,10 +237,85 @@ export default function Admin() {
         await supabase.storage.from(bucket).remove([storagePath]);
       }
     } catch {}
-    setBlocks((prev) => prev.map((b) => (b.id === block.id ? { ...b, pdf_url: null } : b)));
+    setBlocks((prev) =>
+      prev.map((b) => (b.id === block.id ? { ...b, pdf_url: null } : b))
+    );
   };
 
-  /** zapisz zmiany w blokach i opisach galerii */
+  // --------- AUTO TŁUMACZENIE I NATYCHMIASTOWY ZAPIS DO SUPABASE ----------
+  const autoTranslateAndSave = async (block, targetLang /* "en"|"de"|"es"|"uk" */) => {
+    try {
+      // baza = PL (wymuszamy, żeby nie powielać błędów)
+      const base = translations[block.id]?.pl || {};
+      const srcTitle = base.title?.trim();
+      const srcDesc = base.description?.trim();
+
+      if (!srcTitle && !srcDesc) {
+        alert("Brak treści po polsku — uzupełnij PL i spróbuj ponownie.");
+        return;
+      }
+
+      setBusy({ id: block.id, lang: targetLang });
+
+      // Wywołanie naszego API /api/translate (ustalaliśmy: { text, target })
+      const translateOne = async (txt) => {
+        if (!txt) return "";
+        const r = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: txt, target: targetLang.toUpperCase() }),
+        });
+        const j = await r.json();
+        if (!r.ok || j.error) throw new Error(j.message || "Błąd tłumaczenia");
+        return j.text;
+      };
+
+      const [newTitle, newDesc] = await Promise.all([
+        translateOne(srcTitle),
+        translateOne(srcDesc),
+      ]);
+
+      // Zapis od razu do Supabase (upsert po (block_id, lang))
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      const up = await supabase
+        .from("translations")
+        .upsert(
+          {
+            block_id: block.id,
+            lang: targetLang,
+            title: newTitle || "",
+            description: newDesc || "",
+            created_by: user?.id || null,
+          },
+          { onConflict: "block_id,lang" }
+        )
+        .select("*")
+        .single();
+
+      if (up.error) throw up.error;
+
+      // Odśwież lokalny stan — od razu widać
+      setTranslations((prev) => ({
+        ...prev,
+        [block.id]: {
+          ...(prev[block.id] || {}),
+          [targetLang]: { title: newTitle || "", description: newDesc || "" },
+        },
+      }));
+
+      setMsg(`✅ Przetłumaczono i zapisano (${targetLang.toUpperCase()})`);
+      setTimeout(() => setMsg(""), 2500);
+    } catch (e) {
+      alert(e.message || String(e));
+    } finally {
+      setBusy({ id: null, lang: null });
+    }
+  };
+
+  /** zapisz zmiany w blokach i opisach galerii (dla bieżącego lang) */
   const saveAll = async () => {
     for (const b of blocks) {
       await supabase
@@ -247,10 +327,10 @@ export default function Admin() {
           visible: b.visible,
           position: b.position,
           pdf_url: b.pdf_url ?? null,
-          pdf_button_text: b.pdf_button_text ?? null,
         })
         .eq("id", b.id);
 
+      // Zapis tłumaczeń dla AKTUALNEGO lang (ręczne zmiany w polach)
       const tr = translations[b.id]?.[lang] || {};
       if (tr.id) {
         await supabase
@@ -258,12 +338,15 @@ export default function Admin() {
           .update({ title: tr.title, description: tr.description })
           .eq("id", tr.id);
       } else if (tr.title || tr.description) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
         await supabase.from("translations").insert({
           block_id: b.id,
           lang,
           title: tr.title || "",
           description: tr.description || "",
-          created_by: session.user.id,
+          created_by: user?.id || null,
         });
       }
     }
@@ -299,7 +382,6 @@ export default function Admin() {
         position: nextPos,
         created_by: user.id,
         pdf_url: null,
-        pdf_button_text: "Zobacz PDF",
       })
       .select("*")
       .single();
@@ -319,19 +401,16 @@ export default function Admin() {
     setBlocks((prev) => prev.filter((x) => x.id !== b.id));
   };
 
-  /** przesuwanie bloku o 1 pozycję (zamiana z sąsiadem) + aktualizacja position w stanie) */
+  /** przesuwanie bloku */
   const moveBlock = async (id, dir /* -1 = w górę, 1 = w dół */) => {
     const list = [...blocks].sort((a, b) => a.position - b.position);
     const idx = list.findIndex((x) => x.id === id);
     if (idx === -1) return;
-
     const swapIdx = dir === -1 ? idx - 1 : idx + 1;
     if (swapIdx < 0 || swapIdx >= list.length) return;
-
     const a = list[idx];
     const b = list[swapIdx];
 
-    // zmień w DB
     const upd1 = await supabase
       .from("blocks")
       .update({ position: b.position })
@@ -350,13 +429,11 @@ export default function Admin() {
       return;
     }
 
-    // ważne: zaktualizuj *position* lokalnie, aby nie wymagać F5
     const newA = { ...a, position: b.position };
     const newB = { ...b, position: a.position };
     const newList = [...list];
     newList[idx] = newA;
     newList[swapIdx] = newB;
-
     setBlocks(newList);
   };
 
@@ -392,11 +469,13 @@ export default function Admin() {
           .sort((a, b) => a.position - b.position)
           .map((b, i, arr) => {
             const tr = translations[b.id]?.[lang] || {};
+            const trPL = translations[b.id]?.pl || {};
+
             return (
               <div key={b.id} className="bg-white/5 p-4 rounded-xl mb-4">
                 <div className="mb-2 font-bold">{b.slug || `block-${b.id}`}</div>
 
-                {/* przesuwanie + usuwanie */}
+                {/* Kolejność / usuwanie */}
                 <div className="flex flex-wrap gap-2 mb-3">
                   <button
                     onClick={() => moveBlock(b.id, -1)}
@@ -420,34 +499,65 @@ export default function Admin() {
                   </button>
                 </div>
 
+                {/* AUTO-TŁUMACZ – PL → EN/DE/ES/UK (zapis natychmiast) */}
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {["en", "de", "es", "uk"].map((tgt) => {
+                    const busyNow = busy.id === b.id && busy.lang === tgt;
+                    return (
+                      <button
+                        key={tgt}
+                        onClick={() => autoTranslateAndSave(b, tgt)}
+                        className="px-2 py-1 rounded bg-blue-500 disabled:opacity-40"
+                        disabled={!trPL.title && !trPL.description || busyNow}
+                        title={
+                          !trPL.title && !trPL.description
+                            ? "Najpierw uzupełnij treść po polsku."
+                            : `Przetłumacz i zapisz: ${tgt.toUpperCase()}`
+                        }
+                      >
+                        {busyNow ? `Tłumaczę ${tgt.toUpperCase()}...` : `Auto-tłumacz: ${tgt.toUpperCase()}`}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Tytuł / opis (dla AKTUALNEGO języka) */}
                 <input
                   className="w-full mb-2 px-2 py-1 bg-white/10"
-                  placeholder="Tytuł"
+                  placeholder={`Tytuł (${lang.toUpperCase()})`}
                   value={tr.title || ""}
                   onChange={(e) =>
                     setTranslations((prev) => ({
                       ...prev,
                       [b.id]: {
                         ...prev[b.id],
-                        [lang]: { ...tr, title: e.target.value },
+                        [lang]: {
+                          ...(prev[b.id]?.[lang] || {}),
+                          title: e.target.value,
+                        },
                       },
                     }))
                   }
                 />
                 <textarea
                   className="w-full mb-2 px-2 py-1 bg-white/10"
-                  placeholder="Opis"
+                  placeholder={`Opis (${lang.toUpperCase()})`}
                   value={tr.description || ""}
                   onChange={(e) =>
                     setTranslations((prev) => ({
                       ...prev,
                       [b.id]: {
                         ...prev[b.id],
-                        [lang]: { ...tr, description: e.target.value },
+                        [lang]: {
+                          ...(prev[b.id]?.[lang] || {}),
+                          description: e.target.value,
+                        },
                       },
                     }))
                   }
                 />
+
+                {/* Linki */}
                 <input
                   className="w-full mb-2 px-2 py-1 bg-white/10"
                   placeholder="Link URL"
@@ -472,6 +582,7 @@ export default function Admin() {
                     )
                   }
                 />
+
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -515,51 +626,27 @@ export default function Admin() {
                 )}
 
                 {/* PDF */}
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center gap-3">
-                    <input
-                      className="w-full px-2 py-1 bg-white/10"
-                      readOnly
-                      value={
-                        b.pdf_url
-                          ? new URL(b.pdf_url).pathname.split("/").pop()
-                          : ""
-                      }
-                      placeholder="Brak PDF"
-                      title={b.pdf_url || ""}
-                    />
-                    <button
-                      onClick={() =>
-                        uploadPdf(b.id, b.slug || `block-${b.id}`)
-                      }
-                      className="px-3 py-1 rounded bg-white text-black"
-                    >
-                      Wgraj PDF
-                    </button>
-                    {b.pdf_url && (
-                      <button
-                        onClick={() => removePdf(b)}
-                        className="px-3 py-1 rounded bg-red-600"
-                      >
-                        Usuń PDF
-                      </button>
-                    )}
-                  </div>
-
+                <div className="mt-3 flex items-center gap-3">
                   <input
                     className="w-full px-2 py-1 bg-white/10"
-                    placeholder='Tekst przycisku PDF (np. "Zobacz menu PDF")'
-                    value={b.pdf_button_text || ""}
-                    onChange={(e) =>
-                      setBlocks((prev) =>
-                        prev.map((x) =>
-                          x.id === b.id
-                            ? { ...x, pdf_button_text: e.target.value }
-                            : x
-                        )
-                      )
-                    }
+                    readOnly
+                    value={b.pdf_url || ""}
+                    placeholder="Brak PDF"
                   />
+                  <button
+                    onClick={() => uploadPdf(b.id, b.slug || `block-${b.id}`)}
+                    className="px-3 py-1 rounded bg-white text-black"
+                  >
+                    Wgraj PDF
+                  </button>
+                  {b.pdf_url && (
+                    <button
+                      onClick={() => removePdf(b)}
+                      className="px-3 py-1 rounded bg-red-600"
+                    >
+                      Usuń PDF
+                    </button>
+                  )}
                 </div>
               </div>
             );

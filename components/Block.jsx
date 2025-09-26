@@ -33,7 +33,7 @@ export default function Block({
         <div
           aria-hidden
           className="absolute inset-0 pointer-events-none"
-          style={{ backgroundColor: "rgba(0,0,0,0.50)" }}
+          style={{ backgroundColor: "rgba(0,0,0,0.40)" }}
         />
       )}
 

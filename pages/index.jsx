@@ -1,11 +1,13 @@
 // pages/index.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { supabase } from "../lib/supabaseClient";
 import Block from "../components/Block";
 import Gallery from "../components/Gallery";
 import LanguageSwitcher from "../components/LanguageSwitcher";
+
+const SUPPORTED_LANGS = ["pl", "en", "de", "es", "uk"]; // dodany ukraiński
 
 export default function Home() {
   const [lang, setLang] = useState("pl");
@@ -15,7 +17,7 @@ export default function Home() {
 
   // Dane kontaktowe + linki
   const CONTACT = {
-    name: "Rock’nBEEF — Steakhouse",
+    name: "Rock’n Beef — Steakhouse",
     street: "Zacisze 5C/1",
     postalCity: "65-775 Zielona Góra",
     phone: "+48 697 002 234",
@@ -29,6 +31,12 @@ export default function Home() {
   const MAP_IFRAME_SRC =
     "https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d2459.5527136925057!2d15.476904176899577!3d51.942111678853266!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x470613f002e97b19%3A0xa29f24cc18ff1b6c!2sSteakHouse%20Rock'n%20BEEF!5e0!3m2!1spl!2spl!4v1758896343133!5m2!1spl!2spl";
 
+  // Normalizujemy język od switchera (np. gdy zwraca "EN")
+  const handleLangChange = (value) => {
+    const l = String(value || "").toLowerCase();
+    setLang(SUPPORTED_LANGS.includes(l) ? l : "pl");
+  };
+
   useEffect(() => {
     (async () => {
       // Bloki (z PDF)
@@ -39,7 +47,7 @@ export default function Home() {
         )
         .order("position", { ascending: true });
 
-      // Tłumaczenia — bierzemy najnowsze po updated_at (fallback: id)
+      // Tłumaczenia — najnowsze po updated_at (fallback: id)
       const { data: t } = await supabase
         .from("translations")
         .select("id, block_id, lang, title, description, updated_at")
@@ -56,7 +64,9 @@ export default function Home() {
 
       setBlocks((b || []).filter((x) => x.visible));
 
-      // Mapuj tylko najnowszy rekord per (block_id, lang)
+      // Mapujemy najnowszy rekord per (block_id, lang).
+      // Ponieważ sort jest DESC, pierwszy napotkany dla pary (block_id, lang)
+      // to najnowszy – i tylko jego zapisujemy.
       const map = {};
       (t || []).forEach((row) => {
         if (!map[row.block_id]) map[row.block_id] = {};
@@ -73,7 +83,20 @@ export default function Home() {
     })();
   }, []);
 
-  const getTr = (id) => translations?.[id]?.[lang] || {};
+  // Bezpieczny getter: lang -> PL -> dowolny dostępny
+  const getTr = useMemo(() => {
+    return (id) => {
+      const pack = translations?.[id] || null;
+      if (!pack) return {};
+      // 1) wybrany
+      if (pack[lang]?.title || pack[lang]?.description) return pack[lang];
+      // 2) fallback do PL
+      if (pack.pl?.title || pack.pl?.description) return pack.pl;
+      // 3) pierwszy dostępny język (gdy brak PL)
+      const first = Object.values(pack)[0];
+      return first || {};
+    };
+  }, [translations, lang]);
 
   return (
     <>
@@ -83,13 +106,13 @@ export default function Home() {
           <Link href="/" className="flex items-center gap-2">
             <Image
               src="/icon-32.png"
-              alt="Rock’nBEEF"
+              alt="Rock’n Beef"
               width={32}
               height={32}
               priority
             />
             <span className="text-xl font-extrabold tracking-tight">
-              Rock’nBEEF
+              Rock’n Beef
             </span>
           </Link>
 
@@ -98,7 +121,7 @@ export default function Home() {
           </div>
 
           <div className="flex-1" />
-          <LanguageSwitcher value={lang} onChange={setLang} />
+          <LanguageSwitcher value={lang} onChange={handleLangChange} />
         </div>
       </header>
 
@@ -111,6 +134,7 @@ export default function Home() {
               background={b.background_image}
               title={tr.title}
               description={tr.description}
+              // przyciski nie zależą od tłumaczeń (masz je w blocks)
               linkText={b.link_text}
               linkUrl={b.link_url}
               pdfUrl={b.pdf_url}
@@ -242,7 +266,7 @@ export default function Home() {
 
         {/* Copyright */}
         <div className="mt-10 text-center text-white/60">
-          © {new Date().getFullYear()} Rock’nBEEF — Wszystkie prawa zastrzeżone
+          © {new Date().getFullYear()} Rock’n Beef — Wszystkie prawa zastrzeżone
         </div>
 
         {/* Mapa NA SAMYM DOLE */}
@@ -255,7 +279,7 @@ export default function Home() {
               allowFullScreen
               loading="lazy"
               referrerPolicy="no-referrer-when-downgrade"
-              title="Mapa dojazdu — Rock’nBEEF"
+              title="Mapa dojazdu — Rock’n Beef"
             />
           </div>
         </div>
