@@ -15,7 +15,7 @@ export default function Block({
     <section
       className="relative w-full overflow-hidden"
       style={{
-        // stabilna wysokość (możesz podnieść do 70–80vh)
+        // stabilna wysokość sekcji
         minHeight: "65vh",
         display: "flex",
         alignItems: "center",
@@ -28,12 +28,12 @@ export default function Block({
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* overlay ~24%: mniej „blade” niż 40% */}
+      {/* overlay – regulujesz tu przyciemnienie (0–1). Obecnie 0.50 */}
       {background && (
         <div
           aria-hidden
           className="absolute inset-0 pointer-events-none"
-          style={{ backgroundColor: "rgba(0,0,0,0.24)" }}
+          style={{ backgroundColor: "rgba(0,0,0,0.50)" }}
         />
       )}
 
