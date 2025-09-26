@@ -1,5 +1,4 @@
-import Image from "next/image";
-
+// components/Block.jsx
 export default function Block({
   background,
   title,
@@ -13,29 +12,32 @@ export default function Block({
   const hasPdf = !!pdfUrl;
 
   return (
-    <section className="section relative overflow-hidden">
-      {/* TŁO */}
-      {background && (
-        <Image
-          src={background}
-          alt={title ? `Tło: ${title}` : "Tło sekcji"}
-          fill
-          priority={false}
-          sizes="(min-width: 1024px) 100vw, 100vw"
-          className="object-cover z-0"
-        />
-      )}
+    <section
+      className="relative w-full overflow-hidden"
+      style={{
+        // stabilna wysokość (możesz podnieść do 70–80vh)
+        minHeight: "65vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
 
-      {/* OVERLAY ~25% (JAŚNIEJSZY) + gwarantowany z-index */}
+        // tło jako CSS — pewne na Androidach
+        backgroundImage: background ? `url(${background})` : "none",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundRepeat: "no-repeat",
+      }}
+    >
+      {/* overlay ~24%: mniej „blade” niż 40% */}
       {background && (
         <div
-          className="absolute inset-0 bg-black/5 pointer-events-none z-[1]"
-          aria-hidden="true"
+          aria-hidden
+          className="absolute inset-0 pointer-events-none"
+          style={{ backgroundColor: "rgba(0,0,0,0.24)" }}
         />
       )}
 
-      {/* TREŚĆ zawsze nad overlayem */}
-      <div className="section-inner relative z-[2]">
+      <div className="relative z-10 max-w-5xl mx-auto px-4 py-16 text-center">
         {title && (
           <h2 className="text-3xl md:text-5xl font-extrabold mb-4">
             {title}
@@ -43,15 +45,24 @@ export default function Block({
         )}
 
         {description && (
-          <p className="text-lg md:text-xl text-white/90 mb-4">{description}</p>
+          <p className="text-lg md:text-xl text-white/90 mb-4">
+            {description}
+          </p>
         )}
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-3 justify-center">
           {hasPdf && (
-            <a className="btn" href={pdfUrl} target="_blank" rel="noreferrer">
+            <a
+              className="btn"
+              href={pdfUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={pdfButtonText}
+            >
               {pdfButtonText}
             </a>
           )}
+
           {hasLink && (
             <a
               className="btn btn-secondary"
